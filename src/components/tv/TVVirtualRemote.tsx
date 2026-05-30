@@ -11,6 +11,7 @@ import {
   Power,
   RotateCcw,
 } from 'lucide-react';
+import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 
 import { fireTVRemoteKey } from '@/lib/tv-remote-core';
@@ -30,13 +31,22 @@ function isVisible(element: HTMLElement) {
   return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
 }
 
-function getFocusableElements() {
+function getScopedFocusableElements() {
   const scope = document.querySelector<HTMLElement>('[data-tv-focus-scope="active"]');
   if (scope) {
     return Array.from(scope.querySelectorAll<HTMLElement>(focusableSelector))
       .filter((element) => !element.closest('[data-tv-remote]'))
       .filter((element) => !element.closest('[data-tv-no-focus="true"]'))
       .filter(isVisible);
+  }
+
+  return null;
+}
+
+function getFocusableElements() {
+  const scopedElements = getScopedFocusableElements();
+  if (scopedElements) {
+    return Array.from(new Set([...getTopNavigationElements(), ...scopedElements]));
   }
 
   return Array.from(document.querySelectorAll<HTMLElement>(focusableSelector))
@@ -96,6 +106,59 @@ function isTopNavigationElement(element: HTMLElement) {
   return Boolean(element.closest('header'));
 }
 
+function getTopNavigationElements() {
+  const header = document.querySelector<HTMLElement>('header');
+  if (!header) return [];
+
+  return Array.from(header.querySelectorAll<HTMLElement>(focusableSelector))
+    .filter((element) => !element.closest('[data-tv-no-focus="true"]'))
+    .filter(isVisible);
+}
+
+function getContentFocusableElements() {
+  const scopedElements = getScopedFocusableElements();
+  if (scopedElements) return scopedElements;
+
+  return Array.from(document.querySelectorAll<HTMLElement>(focusableSelector))
+    .filter((element) => !element.closest('header'))
+    .filter((element) => !element.closest('[data-tv-remote]'))
+    .filter((element) => !element.closest('[data-tv-no-focus="true"]'))
+    .filter(isVisible);
+}
+
+function focusNearestTopNavigationElement(active: HTMLElement) {
+  const topNavigationElements = getTopNavigationElements();
+  if (topNavigationElements.length === 0) return false;
+
+  const pathname = window.location.pathname;
+  const activeNavigationElement = topNavigationElements.find((element) => {
+    if (!(element instanceof HTMLAnchorElement)) return false;
+    const href = element.getAttribute('href');
+    if (!href) return false;
+    return href === '/tv' ? pathname === '/tv' : pathname === href || pathname.startsWith(`${href}/`);
+  });
+
+  if (activeNavigationElement) {
+    focusElement(activeNavigationElement);
+    return true;
+  }
+
+  const activeRect = active.getBoundingClientRect();
+  const activeCenterX = activeRect.left + activeRect.width / 2;
+  const bestNavigationElement = topNavigationElements.reduce<HTMLElement | null>((best, element) => {
+    if (!best) return element;
+    const rect = element.getBoundingClientRect();
+    const bestRect = best.getBoundingClientRect();
+    const distance = Math.abs(rect.left + rect.width / 2 - activeCenterX);
+    const bestDistance = Math.abs(bestRect.left + bestRect.width / 2 - activeCenterX);
+    return distance < bestDistance ? element : best;
+  }, null);
+
+  if (!bestNavigationElement) return false;
+  focusElement(bestNavigationElement);
+  return true;
+}
+
 function focusElement(element: HTMLElement) {
   element.focus({ preventScroll: true });
 
@@ -137,6 +200,28 @@ function moveSpatialFocus(direction: 'up' | 'down' | 'left' | 'right', lastFocus
   if (!active || !elements.includes(active)) {
     focusElement(elements[0]);
     return;
+  }
+
+  if (direction === 'down' && isTopNavigationElement(active)) {
+    const firstContentElement = getContentFocusableElements()[0];
+    if (firstContentElement) {
+      focusElement(firstContentElement);
+      return;
+    }
+  }
+
+  if (direction === 'up' && !isTopNavigationElement(active)) {
+    const activeRect = active.getBoundingClientRect();
+    const activeCenterY = activeRect.top + activeRect.height / 2;
+    const hasContentAbove = getContentFocusableElements().some((element) => {
+      if (element === active) return false;
+      const rect = element.getBoundingClientRect();
+      return rect.top + rect.height / 2 < activeCenterY - 8;
+    });
+
+    if (!hasContentAbove) {
+      if (focusNearestTopNavigationElement(active)) return;
+    }
   }
 
   const current = active.getBoundingClientRect();
@@ -247,6 +332,7 @@ function RemoteButton({
 }
 
 export default function TVVirtualRemote() {
+  const router = useRouter();
   const [open, setOpen] = useState(false);
   const lastFocusedRef = useRef<HTMLElement | null>(null);
 
@@ -320,7 +406,7 @@ export default function TVVirtualRemote() {
 
       if (event.key === 'Home') {
         event.preventDefault();
-        window.location.href = '/tv';
+        router.push('/tv');
       }
     };
 
@@ -330,7 +416,7 @@ export default function TVVirtualRemote() {
       document.removeEventListener('focusin', onFocusIn);
       window.removeEventListener('keydown', onKeyDown, true);
     };
-  }, []);
+  }, [router]);
 
   if (!open) return null;
 
